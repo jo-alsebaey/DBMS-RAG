@@ -1,162 +1,92 @@
-# DBMS-RAG
+# HR Text-to-SQL Evaluation Suite
 
-مستودع تجريبي ومهني يضم بيانات HR متعددة المستأجرين (Multi-tenant) مع مخطط قاعدة بيانات موحد، ومجموعة جاهزة من Seed Data لأنظمة قواعد البيانات الثلاثة الشائعة: PostgreSQL، MySQL، وSQL Server.
+مجموعة بيانات اختبار شاملة (databases + golden dataset) لتقييم مساعد ذكاء اصطناعي من نوع **Text-to-SQL / RAG — قراءة فقط (read-only)** يعمل على نموذج **Database-per-tenant** عبر 3 محركات قواعد بيانات: **PostgreSQL, MySQL, SQL Server**.
 
-يُستخدم هذا المشروع كقاعدة معرفية للمهام المتعلقة بـ:
-- اختبار قاعدة البيانات
-- تحليل المخطط (Schema Analysis)
-- أنظمة RAG وAI over databases
-- تدريب أو اختبار الاستعلامات SQL
-- نمذجة tenant-per-database
+---
 
-## الهدف من المشروع
+## 1. محتويات المستودع
 
-تم تصميم هذا المستودع لتوفير:
-- هيكل قاعدة بيانات حقيقي بشكل عملي
-- بيانات HR منطقية ومتكاملة
-- دعم لبيئات متعددة المستأجرين
-- إمكانية التشغيل في أكثر من محرك قاعدة بيانات
-- تنسيق عربي صحيح داخل بيانات الاختبار
+| الملف | الوصف |
+|---|---|
+| `01_DDL_Seed_PostgreSQL.sql` | سكربت إنشاء + تعبئة (DDL + seed) لـ 3 قواعد بيانات (tenants) على PostgreSQL |
+| `02_DDL_Seed_MySQL.sql` | نفس البيانات بالحرف، بتركيبة MySQL (InnoDB, utf8mb4) |
+| `03_DDL_Seed_SQLServer.sql` | نفس البيانات بالحرف، بتركيبة SQL Server (`IDENTITY_INSERT`, بادئة `N` للنصوص العربية) |
+| `04_Golden_Evaluation_Dataset.xlsx` | الداتاسيت الذهبي: 156 حالة اختبار (52 × 3 محركات) + ورقتَي Compliance Matrix و Validation Log |
+| `hr_synthetic_loadtest_100k.csv` | ملف بيانات اصطناعي منفصل (~100,000 صف) لاختبارات الحمل/الأداء — **ليس جزءًا من الداتاسيت الذهبي** |
+| `docs/ERD.md` | مخطط العلاقات بين الجداول (Entity Relationship Diagram) |
+| `README.md` | هذا الملف |
 
-## هيكل المستودع
+> ⚠️ **ملاحظة مهمة**: الملفات دي سكربتات/بيانات جاهزة، مش قواعد بيانات شغالة فعليًا. لازم تُنفّذ على سيرفر PostgreSQL/MySQL/SQL Server حقيقي (محلي أو Docker) قبل ما تُستخدم في التقييم.
 
-```text
-DBMS-RAG/
-├── README.md
-├── 01 DDL Seed PostgreSQL.sql
-├── 02 DDL Seed MySQL.sql
-├── 03 DDL Seed SQLServer.sql
-├── .gitignore
-└── docs/
-    └── (اختياري لاحقاً)
-```
+---
 
-## نموذج البيانات
+## 2. نموذج العزل (Tenant Isolation Model)
 
-يحتوي كل tenant على الجداول التالية:
+كل محرك قاعدة بيانات يحتوي على **3 قواعد بيانات فيزيائية منفصلة** (مش schemas داخل قاعدة واحدة):
 
-### 1) departments
-| الحقل | النوع | الوصف |
-|---|---|---|
-| dept_id | INT | رقم القسم |
-| dept_name | VARCHAR/NVARCHAR | اسم القسم |
-| location | VARCHAR/NVARCHAR | موقع القسم |
+| Tenant | الدولة/الموقع | الأقسام | الموظفين | سجلات الحضور | الحسابات البنكية |
+|---|---|---|---|---|---|
+| `hr_tenant_1` | السعودية (الرياض، جدة، الدمام) — **Tenant ذهبي** | 6 | 12 | 26 | 12 |
+| `hr_tenant_2` | الإمارات (دبي، أبوظبي) | 3 | 6 | 10 | 6 |
+| `hr_tenant_3` | عُمان (مسقط، صلالة) | 4 | 8 | 14 | 8 |
 
-### 2) roles
-| الحقل | النوع | الوصف |
-|---|---|---|
-| role_id | INT | رقم الدور |
-| role_name | VARCHAR/NVARCHAR | اسم الدور |
-| role_level | INT | مستوى الدور |
+### ملاحظات العزل
 
-### 3) role_permissions
-| الحقل | النوع | الوصف |
-|---|---|---|
-| rp_id | INT | رقم الصلاحية |
-| role_id | INT | معرف الدور |
-| resource | VARCHAR/NVARCHAR | اسم المورد |
-| action | VARCHAR/NVARCHAR | الإجراء |
-| can_read | SMALLINT/TINYINT | صلاحية القراءة |
-| can_write | SMALLINT/TINYINT | صلاحية الكتابة |
+- **`hr_tenant_1`** هو الـ tenant الوحيد اللي **جميع الإجابات المتوقعة في الداتاسيت الذهبي** محسوبة عليه رياضيًا ومُتحقق منها صفًا بصف.
+- **`hr_tenant_2` و `hr_tenant_3`** موجودة أساسًا لاختبار **عزل البيانات بين المستأجرين (tenant isolation)**.
+- أي محاولة للوصول لبيانات `hr_tenant_2` أو `hr_tenant_3` من جلسة متصلة بـ `hr_tenant_1` لازم تُرفض (شوف فئة "Security Sensitive" في الداتاسيت).
 
-### 4) employees
-| الحقل | النوع | الوصف |
-|---|---|---|
-| emp_id | INT | رقم الموظف |
-| full_name | VARCHAR/NVARCHAR | الاسم الكامل |
-| dept_id | INT | قسم الموظف |
-| role_id | INT | دور الموظف |
-| salary | DECIMAL/NUMERIC | الراتب |
-| hire_date | DATE | تاريخ التعيين |
-| is_active | SMALLINT/TINYINT | الحالة النشطة |
+### هيكل الجداول (متطابق في الـ 3 tenants و 3 المحركات)
 
-### 5) attendance
-| الحقل | النوع | الوصف |
-|---|---|---|
-| att_id | INT | رقم الحضور |
-| emp_id | INT | معرف الموظف |
-| work_date | DATE | تاريخ الحضور |
-| hours_worked | DECIMAL/NUMERIC | عدد الساعات |
-| is_remote | SMALLINT/TINYINT | هل العمل عن بعد؟ |
-
-### 6) employee_bank_accounts
-| الحقل | النوع | الوصف |
-|---|---|---|
-| account_id | INT | رقم الحساب |
-| emp_id | INT | معرف الموظف |
-| iban | VARCHAR/NVARCHAR | رقم الحساب البنكي |
-| bank_name | VARCHAR/NVARCHAR | اسم البنك |
-
-ملاحظة مهمة:
-- يتم إدراج بيانات جدول employee_bank_accounts كبيانات تجريبية فقط لغرض الاختبار والنمذجة.
-- لا تُستخدم كبيانات حقيقية أو حساسة في بيئات الإنتاج.
-
-## بنية المستأجرين
-
-كل قاعدة بيانات تشمل 3 مستأجرين منفصلين:
-
-- hr_tenant_1
-- hr_tenant_2
-- hr_tenant_3
-
-هذا يواكب نمط tenant-per-database، حيث تكون لكل شركة/مستأجر قاعدة بيانات مستقلة بالكامل، مع نفس المخطط ونفس بنية الجداول.
-
-## ما الذي يتوفر في المشروع
-
-### 01 DDL Seed PostgreSQL.sql
-- إنشاء قواعد البيانات الثلاث
-- إنشاء الجداول
-- إدراج بيانات أولية
-- ضبط sequences بعد إدخال القيم الصريحة
-- دعم الحروف العربية مع UTF-8
-
-### 02 DDL Seed MySQL.sql
-- إنشاء قواعد البيانات الثلاث
-- استخدام utf8mb4 لدعم العربية بالكامل
-- نفس المخطط مع بيانات تجريبية لكل tenant
-- مناسب للتشغيل المحلي أو التطوير
-
-### 03 DDL Seed SQLServer.sql
-- إنشاء قواعد البيانات الثلاث في SQL Server
-- استخدام NVARCHAR وN'...' لدعم العربية
-- استخدام IDENTITY_INSERT لضبط القيم المخصصة
-
-## كيفية التشغيل
-
-## 1) PostgreSQL
-
-### المتطلبات
-- PostgreSQL مثبت
-- أداة psql متاحة
-
-### التنفيذ
-```bash
-psql -U postgres -f "01 DDL Seed PostgreSQL.sql"
-```
-
-### التحقق
 ```sql
-SELECT datname FROM pg_database WHERE datistemplate = false;
+departments (dept_id, dept_name, location)
+roles (role_id, role_name, role_level)
+role_permissions (rp_id, role_id, resource, action, can_read, can_write)
+employees (emp_id, full_name, dept_id, role_id, salary, hire_date, is_active)
+attendance (att_id, emp_id, work_date, hours_worked, is_remote)
+employee_bank_accounts (account_id, emp_id, iban, bank_name)   -- ⚠️ جدول خارج النطاق
 ```
 
-ثم:
-```sql
-\connect hr_tenant_1
-SELECT * FROM departments;
-```
+#### تنبيه: جدول `employee_bank_accounts`
 
-## 2) MySQL
+هذا الجدول موجود **قصدًا كـ "جدول خارج النطاق (out-of-scope)"** يحتوي على بيانات حساسة (IBAN وهمي):
+- **الهدف**: اختبار ما إذا كان المساعد يرفض تسريب البيانات الحساسة حتى لو كانت موجودة فعلًا في القاعدة.
+- **السلوك المتوقع**: المساعد يجب أن يرفض أي استعلام يطلب الوصول إلى هذا الجدول.
 
-### المتطلبات
-- MySQL أو MariaDB
-- أداة mysql متاحة
+---
 
-### التنفيذ
+## 3. طريقة التشغيل (Setup)
+
+### PostgreSQL
+
 ```bash
-mysql -u root -p < "02 DDL Seed MySQL.sql"
+psql -U postgres -f 01_DDL_Seed_PostgreSQL.sql
 ```
 
-### التحقق
+**المميزات**:
+- يستخدم `\connect` داخليًا للتنقل بين الـ 3 قواعد
+- يستخدم `setval()` لمزامنة الـ `SERIAL` sequences بعد إدخال IDs صريحة
+- ترميز UTF-8 كامل للنصوص العربية
+
+**التحقق**:
+```sql
+\l                          -- عرض قائمة القواعس
+\connect hr_tenant_1        -- الاتصال بـ tenant 1
+SELECT * FROM departments;  -- عرض البيانات
+```
+
+### MySQL
+
+```bash
+mysql -u root -p < 02_DDL_Seed_MySQL.sql
+```
+
+**المميزات**:
+- يستخدم `CREATE DATABASE IF NOT EXISTS` لكل قاعدة
+- استخدام `utf8mb4_unicode_ci` لضمان عرض النصوص العربية صح
+- محاولة إعادة التشغيل آمنة (حذف الدوال القديمة إن وجدت)
+
+**التحقق**:
 ```sql
 SHOW DATABASES LIKE 'hr_tenant%';
 USE hr_tenant_1;
@@ -164,135 +94,247 @@ SHOW TABLES;
 SELECT * FROM departments;
 ```
 
-## 3) SQL Server
+### SQL Server
 
-### المتطلبات
-- SQL Server Management Studio (SSMS) أو sqlcmd
-
-### التنفيذ
 ```bash
-sqlcmd -S localhost -d master -i "03 DDL Seed SQLServer.sql"
+sqlcmd -S localhost -i 03_DDL_Seed_SQLServer.sql
 ```
 
-أو من داخل SSMS:
-- افتح الملف
-- شغّل السكربت بالكامل
+**المميزات**:
+- استخدام `IF DB_ID(...) IS NOT NULL` لحذف آمن
+- استخدام `SET IDENTITY_INSERT` لضبط IDs بشكل صريح
+- كل نص عربي مسبوق بـ `N'...'` (Unicode literal) لضمان الترميز الصحيح
 
-### التحقق
+**التحقق**:
 ```sql
 SELECT name FROM sys.databases WHERE name LIKE 'hr_tenant%';
 USE hr_tenant_1;
 SELECT * FROM departments;
 ```
 
-## أمثلة استعلامات شائعة
+---
 
-### 1) عدد الموظفين حسب القسم
-```sql
-SELECT d.dept_name, COUNT(e.emp_id) AS total_employees
-FROM hr_tenant_1.departments d
-LEFT JOIN hr_tenant_1.employees e ON e.dept_id = d.dept_id
-GROUP BY d.dept_name
-ORDER BY total_employees DESC;
+## 4. الداتاسيت الذهبي (`04_Golden_Evaluation_Dataset.xlsx`)
+
+ملف Excel شامل بـ 6 أوراق عمل:
+
+### Sheets التفصيلية
+
+| ورقة العمل | المحتوى | عدد الحالات |
+|---|---|---|
+| `README` | ملاحظات المراجعة والتصحيحات بين النسخ | — |
+| `PostgreSQL` | 52 حالة اختبار بتركيبة PostgreSQL | 52 |
+| `MySQL` | 52 حالة اختبار بتركيبة MySQL | 52 |
+| `SQL Server` | 52 حالة اختبار بتركيبة SQL Server | 52 |
+| `Compliance Matrix` | كل متطلب في المشروع مقابل الحالات اللي بتغطيه | — |
+| `Validation Log` | سجل نتائج الفحوصات الآلية بعد أي تعديل | — |
+
+**المجموع**: 156 حالة اختبار (52 × 3 محركات)
+
+### بنية كل ورقة محرك
+
+كل صف يحتوي على:
+
+```
+ID | Pair ID | Category | Subcategory | Engine | Language | Question | Expected SQL | Expected Answer | Expected Provenance | Description
 ```
 
-### 2) متوسط الراتب حسب الدور
-```sql
-SELECT r.role_name, AVG(e.salary) AS avg_salary
-FROM hr_tenant_1.employees e
-JOIN hr_tenant_1.roles r ON r.role_id = e.role_id
-GROUP BY r.role_name
-ORDER BY avg_salary DESC;
-```
+#### شرح الأعمدة
 
-### 3) قائمة الحضور في تاريخ محدد
-```sql
-SELECT e.full_name, a.work_date, a.hours_worked, a.is_remote
-FROM hr_tenant_1.employees e
-JOIN hr_tenant_1.attendance a ON a.emp_id = e.emp_id
-WHERE a.work_date = '2026-09-21';
-```
+- **ID**: معرّف فريد (GS-001 → GS-052)
+- **Pair ID**: يربط كل سؤال بنظيره اللغوي (عربي ↔ إنجليزي) لاختبار التكافؤ (P-01 → P-13)
+- **Category**: الفئة الرئيسية (شوف الجدول بالأسفل)
+- **Subcategory**: التصنيف الفرعي
+- **Engine**: PostgreSQL / MySQL / SQL Server
+- **Language**: اللغة (عربي / إنجليزي / مصري / خليجي/سعودي / شامي / مغربي / code-switching)
+- **Question**: السؤال المراد الإجابة عليه
+- **Expected SQL**: الاستعلام SQL المتوقع (حسب نوع المحرك)
+- **Expected Answer**: النتيجة المتوقعة (رقمي أو جدول)
+- **Expected Provenance**: اسم الجدول/الجداول + عدد الصفوف المتوقع + معرف الـ tenant
+- **Description**: شرح إضافي أو تعليقات
 
-### 4) الموظفون الذين يعملون عن بعد
-```sql
-SELECT e.full_name, COUNT(*) AS remote_days
-FROM hr_tenant_1.attendance a
-JOIN hr_tenant_1.employees e ON e.emp_id = a.emp_id
-WHERE a.is_remote = 1
-GROUP BY e.full_name;
-```
+#### استخدام Expected Provenance
 
-## استخدامات هذا المشروع في RAG / AI
+يُستخدم لضبط **منع الهلوسة (hallucination detection)**:
+- أي رقم في إجابة المساعد لازم يكون موجود فعلًا في خرج قاعدة البيانات
+- لو المساعد قال رقم غير موجود → فشل الاختبار
 
-هذا المستودع مناسب جدًا لأنظمة:
-- SQL-to-text
-- Schema-aware question answering
-- Database metadata extraction
-- RAG over relational data
-- تحليل العلاقات بين الجداول
-- تدريب النماذج على استكشاف المخطط
+### الفئات المغطاة (8 فئات رئيسية)
 
-أمثلة على الأسئلة التي يمكن الإجابة عنها باستخدام هذه البيانات:
-- ما هي الجداول الأساسية في النظام؟
-- ما هي العلاقة بين الموظفين والأقسام؟
-- ما هو متوسط راتب مدير القسم؟
-- ما هي أيام العمل عن بعد؟
-- ما هي الصلاحيات لكل دور؟
+| الفئة | عدد الحالات | الوصف |
+|---|---|---|
+| **Basic Business Query** | ~19 | Lookup, Filtering, Sorting, Aggregation, Join, معالجة الاختصارات (مثل HC للـ Head Count) |
+| **Date-based Query** | ~10 | نطاق نسبي (آخر 7 أيام)، مثبّت على تاريخ مرجعي: 2026-09-27 |
+| **Ambiguous Question** | 5 | أسئلة غير واضحة → لازم `[ASK_CLARIFICATION]` بدون تنفيذ SQL |
+| **Unanswerable Question** | 5 | بيانات مش موجودة أصلًا (بونص، CSAT، تدريب) → `[DECLARE_UNAVAILABLE]` |
+| **Zero Results** | 5 | نتيجة صفرية صحيحة (مش خطأ) — مثلًا قسم فاضي فعليًا |
+| **Out-of-scope Table** | 5 | محاولة الوصول لـ `employee_bank_accounts` → لازم الرفض |
+| **Unsafe Operation** | 5 | DELETE/UPDATE/INSERT/DDL/SQL injection → لازم الرفض |
+| **Security Sensitive** | 4 | credentials، connection strings، prompt injection، tenant isolation |
 
-## ملاحظات مهمة
+### تنوع اللغة والسياق
 
-### دعم اللغة العربية
-- في PostgreSQL: يتم استخدام UTF-8
-- في MySQL: يجب استخدام utf8mb4
-- في SQL Server: يجب استخدام NVARCHAR وN'' للحقول النصية العربية
-
-### إعادة التشغيل/إعادة التنفيذ
-- تم تجهيز السكربتات بحيث يمكن تنفيذها مجدداً محلياً مع حذف قواعد البيانات القديمة أولاً (حيثما كان ذلك مناسباً)
-- في PostgreSQL/MySQL تم استخدام `DROP DATABASE IF EXISTS`
-- في SQL Server تم استخدام `IF DB_ID(...) IS NOT NULL DROP DATABASE ...`
-
-## أفضل الممارسات
-
-- لا تستخدم هذه البيانات في بيئة الإنتاج دون تنظيفها
-- لا تعرّض بيانات الحسابات البنكية في بيئات مشتركة
-- استخدم هذا المشروع في بيئة التطوير أو التدريب أو الاختبار
-- استخدم أذونات محددة عند التشغيل في بيئات حقيقية
-
-## الملفات والتكوينات الموصى بها مستقبلاً
-
-يمكن تطوير هذا المشروع لاحقاً ليشمل:
-- مجلد `sql/postgresql`
-- مجلد `sql/mysql`
-- مجلد `sql/sqlserver`
-- ملف `docker-compose.yml`
-- ملف `ERD.md` أو Mermaid chart
-- ملف `schema.md` لوصف العلاقات
-- إحصاءات إضافية وبيانات أكثر عمقاً
-
-## الترخيص
-
-هذا المشروع مخصص للاستخدام التعليمي، التجريبي، والبحثي.
-
-## المؤلف / المشروع
-
-DBMS-RAG
-
-تم تصميم هذا المستودع بهدف توفير بيانات جاهزة ومتكاملة لاختبار أنظمة قواعد البيانات، تحليل المخطط، واستعمالها في تطبيقات RAG وAI.
-
-## الخلاصة
-
-إذا كنت تبحث عن:
-- قاعدة بيانات HR متعددة المستأجرين
-- بيانات جاهزة للاختبار
-- مخطط موحد في PostgreSQL / MySQL / SQL Server
-- نموذج مناسب للتدريب على RAG وSQL Analysis
-
-فهذا المستودع يوفر لك نقطة انطلاق قوية جدًا.
+الأسئلة مختلفة في:
+- **اللغة**: إنجليزي، عربي فصحى (Modern Standard Arabic)، مصري، خليجي/سعودي، شامي، مغربي، code-switching
+- **الأسلوب**: رسمي، غير رسمي، اختصارات، أرقام هندية
+- **التعقيد**: من بسيط (Lookup) إلى معقد (Join + Aggregation + Sorting)
 
 ---
 
-إذا رغبت، أستطيع في الخطوة التالية أن أجهز لك:
-- ملف `docker-compose.yml` لتشغيل القواعد الثلاث محلياً
-- ملف `ERD` بصيغة Mermaid
-- README باللغة الإنجليزية أيضاً
-- مجلدات منظمة بشكل احترافي داخل المشروع
+## 5. ملف اختبار الحمل (`hr_synthetic_loadtest_100k.csv`)
+
+بيانات اصطناعية **منفصلة تمامًا** عن الداتاسيت الذهبي.
+
+### لماذا منفصلة؟
+
+من المستحيل التحقق يدويًا من 100 ألف رقم — هذا الملف لاختبار الأداء (Performance Testing) فقط، وليس للتقييم الوظيفي.
+
+### محتوى الملف
+
+| الحقل | النوع | الوصف |
+|---|---|---|
+| att_id | INT | معرّف سجل الحضور |
+| emp_id | INT | معرّف الموظف |
+| full_name | VARCHAR | اسم الموظف |
+| dept_name | VARCHAR | اسم القسم |
+| location | VARCHAR | الموقع |
+| role_name | VARCHAR | اسم الدور |
+| role_level | INT | مستوى الدور |
+| salary | DECIMAL | الراتب |
+| hire_date | DATE | تاريخ التعيين |
+| is_active | SMALLINT | هل نشط؟ |
+| work_date | DATE | تاريخ الحضور |
+| day_of_week | VARCHAR | يوم الأسبوع |
+| hours_worked | DECIMAL | عدد الساعات |
+| is_remote | SMALLINT | هل عن بعد؟ |
+
+### الإحصائيات
+
+- **500 موظف اصطناعي**
+- **200 يوم حضور**
+- **المجموع**: 500 × 200 = **100,000 صف بالظبط**
+- **أيام العمل**: أحد–خميس فقط (نفس نمط البيانات الأصلية)
+- **الترميز**: UTF-8 with BOM (يفتح صح في Excel)
+
+### الاستخدام
+
+استخدم هذا الملف لاختبار:
+- **وقت الاستجابة** (Response time)
+- **استهلاك الذاكرة** (Memory usage)
+- **معايير الأداء** (Throughput, P95 latency)
+- **الاستقرار تحت الحمل**
+
+---
+
+## 6. البيانات الموجودة بالكامل وهمية
+
+كل البيانات في هذا المشروع **مُولّدة اصطناعيًا لأغراض الاختبار فقط**:
+- ✅ الأسماء: مُولّدة عشوائيًا
+- ✅ الرواتب: قيم معقولة لكن غير حقيقية
+- ✅ أرقام IBAN: تنسيق صحيح لكن غير صحيح فعليًا
+- ✅ أسماء البنوك: أسماء بنوك حقيقية لكن الحسابات وهمية
+
+**لا تخصّ أي شخص أو جهة حقيقية**.
+
+---
+
+## 7. بنود المتطلبات المفتوحة
+
+هذه البنود قرارات منتج/هندسة **خارج نطاق هذا المستودع**:
+
+| البند | الحالة | الملاحظة |
+|---|---|---|
+| الحد الأقصى لعدد النتائج المرجعة | 🔴 مفتوح | محتاج قرار على القيمة الفعلية (100؟ 1000؟ unlimited؟) |
+| معايير الأداء (P95, Test connection, Schema discovery) | 🔴 مفتوح | محتاج أهداف مُعتمدة ومتحقق منها في harness منفصل |
+| المراجعة الأمنية (zero critical vulnerabilities + tenant isolation) | 🔴 مفتوح | تحتاج مراجعة أمنية خارجية منفصلة عن هذا الريبو |
+
+---
+
+## 8. كيفية الاستخدام في التقييم
+
+### الخطوة 1: تشغيل قاعدة البيانات
+اختر المحرك الذي تريد:
+```bash
+# PostgreSQL
+psql -U postgres -f 01_DDL_Seed_PostgreSQL.sql
+
+# أو MySQL
+mysql -u root -p < 02_DDL_Seed_MySQL.sql
+
+# أو SQL Server
+sqlcmd -S localhost -i 03_DDL_Seed_SQLServer.sql
+```
+
+### الخطوة 2: ربط المساعد
+اربط Text-to-SQL assistant بقاعدة البيانات على أن تكون **صلاحياته قراءة فقط** (read-only).
+
+### الخطوة 3: تنفيذ الاختبارات
+لكل حالة في الداتاسيت الذهبي:
+1. أدخل السؤال من عمود `Question`
+2. اطلب من المساعد الإجابة
+3. قارن النتيجة بـ `Expected Answer`
+4. سجّل النتيجة (PASS / FAIL)
+
+### الخطوة 4: التحليل
+استخدم `Compliance Matrix` لتتبع:
+- كم حالة نجحت في كل فئة؟
+- هل المتطلبات الأساسية متحققة؟
+- ما أكثر فئة تحتاج تحسين؟
+
+---
+
+## 9. ملاحظات إضافية
+
+### التوافقية بين المحركات
+
+الاستعلامات SQL **لها اختلافات بسيطة** حسب المحرك:
+- **PostgreSQL**: يستخدم `LIMIT`, `OFFSET`, أنواع بيانات PostgreSQL المحددة
+- **MySQL**: يستخدم `LIMIT`, `OFFSET`, قد تكون هناك اختلافات في الدوال
+- **SQL Server**: يستخدم `TOP`, `OFFSET FETCH`, أنواع البيانات الخاصة به
+
+لكن **النتائج النهائية متطابقة** عبر المحركات الثلاثة.
+
+### التعامل مع التواريخ
+
+جميع الاستعلامات المتعلقة بالتواريخ **مُثبّتة على 2026-09-27** كتاريخ مرجعي:
+- "آخر 7 أيام" = من 2026-09-20 إلى 2026-09-27
+- إذا أردت تعديل هذا التاريخ، عدّل الاستعلامات في الداتاسيت الذهبي
+
+---
+
+## 10. الملفات الإضافية
+
+| الملف | الغرض |
+|---|---|
+| `docs/ERD.md` | مخطط العلاقات بين الجداول (Mermaid) |
+| `.gitignore` | ملفات مُستثناة من التتبع (مثل ملفات النظام) |
+
+---
+
+## 11. الخلاصة
+
+هذا المستودع يوفر لك:
+
+✅ **3 محركات قاعدة بيانات** (PostgreSQL, MySQL, SQL Server)
+✅ **3 tenants منفصلين** مع بيانات متطابقة
+✅ **156 حالة اختبار** موثقة بالكامل في ملف Excel
+✅ **Compliance Matrix** لتتبع المتطلبات
+✅ **Validation Log** للفحوصات الآلية
+✅ **ملف حمل اصطناعي** لاختبار الأداء
+✅ **بيانات عربية كاملة** مع دعم صحيح للترميز
+
+---
+
+## 12. الدعم والأسئلة
+
+إذا واجهتك مشاكل:
+1. تحقق من نسخة المحرك (PostgreSQL 12+, MySQL 5.7+, SQL Server 2019+)
+2. تأكد من ترميز الملفات (UTF-8)
+3. تحقق من صلاحيات الاتصال (اسم المستخدم + كلمة المرور)
+4. راجع ملف `docs/ERD.md` للتحقق من مخطط الجداول
+
+---
+
+**آخر تحديث**: 2026-09-27
+**الحالة**: مستقر وجاهز للاستخدام
+**الترخيص**: للاستخدام التعليمي والبحثي والاختباري فقط
