@@ -329,8 +329,4 @@ If you encounter issues:
 3. Verify connection credentials (username and password).
 4. Review `docs/ERD.md` to verify the table schema.
 
----
 
-Last updated: 2026-09-27
-Status: Stable and ready for use
-License: For educational, research, and testing use only
